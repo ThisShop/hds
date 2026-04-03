@@ -3,15 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Luxury Slots: The Choice</title>
+    <title>Luxury Slots: Limited Edition</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
     
-    <!-- Firebase SDK -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, getDoc, setDoc, updateDoc, onSnapshot, collection, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, getDoc, setDoc, updateDoc, onSnapshot, collection, increment, arrayUnion } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyD6vEmfgTR1q0zpYh0b9hDL0B2t81b-1vM",
@@ -31,74 +30,64 @@
 
         let currentUser = null;
         let balance = 0;
+        let usedPromos = [];
         const symbols = ['💎', '🍒', '🍋', '🔔', '7️⃣', '🌟'];
         const ITEM_HEIGHT = 100;
 
-        // UI
+        // UI Refs
         const balanceText = document.getElementById('balanceText');
         const spinBtn = document.getElementById('spinBtn');
         const winChoiceModal = document.getElementById('winChoiceModal');
-        const choiceTitle = document.getElementById('choiceTitle');
-        const choiceDesc = document.getElementById('choiceDesc');
-        const btnOpt1 = document.getElementById('btnOpt1');
-        const btnOpt2 = document.getElementById('btnOpt2');
 
-        const reelEls = [
-            setupReel('reel0'),
-            setupReel('reel1'),
-            setupReel('reel2')
-        ];
+        const reelEls = [setupReel('reel0'), setupReel('reel1'), setupReel('reel2')];
 
         function setupReel(id) {
             const reel = document.getElementById(id);
-            const content = [];
-            for (let i = 0; i < 40; i++) {
-                content.push(`<div class="slot-item">${symbols[Math.floor(Math.random() * symbols.length)]}</div>`);
-            }
+            const content = Array.from({length: 40}, () => `<div class="slot-item">${symbols[Math.floor(Math.random() * symbols.length)]}</div>`);
             reel.innerHTML = content.join('');
             return reel;
         }
 
-        // Auth
         signInAnonymously(auth).catch(console.error);
         onAuthStateChanged(auth, async (user) => {
             if (user) {
                 currentUser = user;
                 const userDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data');
                 const userDoc = await getDoc(userDocRef);
-                if (!userDoc.exists()) await setDoc(userDocRef, { balance: 0 });
+                
+                if (!userDoc.exists()) {
+                    await setDoc(userDocRef, { balance: 0, usedPromos: [] });
+                }
 
                 onSnapshot(userDocRef, (doc) => {
                     if (doc.exists()) {
-                        balance = doc.data().balance;
+                        const data = doc.data();
+                        balance = data.balance || 0;
+                        usedPromos = data.usedPromos || [];
                         balanceText.textContent = balance;
-                        if (winChoiceModal.style.display !== 'flex') {
-                            spinBtn.disabled = balance <= 0;
-                        }
+                        if (winChoiceModal.style.display !== 'flex') spinBtn.disabled = balance <= 0;
                     }
                 });
 
                 onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'promocodes'), (snap) => {
                     const codes = [];
-                    snap.forEach(d => codes.push(d.id));
+                    snap.forEach(d => {
+                        const data = d.data();
+                        if (data.uses < data.maxUses) codes.push(d.id);
+                    });
                     document.getElementById('codeList').textContent = codes.length ? codes.join(', ') : 'нет';
                 });
             }
         });
 
-        // Game Logic
+        // Spin Logic
         window.handleSpin = async () => {
             if (!currentUser || balance <= 0) return;
-
             const userDocRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data');
             await updateDoc(userDocRef, { balance: balance - 1 });
-
             spinBtn.disabled = true;
-
-            const animationPromises = reelEls.map((reel, index) => animateReel(reel, index));
-            const finalSymbols = await Promise.all(animationPromises);
-
-            checkWinCondition(finalSymbols);
+            const finalSymbols = await Promise.all(reelEls.map((reel, i) => animateReel(reel, i)));
+            checkWin(finalSymbols);
         };
 
         function animateReel(reel, index) {
@@ -106,13 +95,9 @@
                 const targetSymbol = symbols[Math.floor(Math.random() * symbols.length)];
                 const items = reel.querySelectorAll('.slot-item');
                 items[items.length - 1].textContent = targetSymbol;
-
                 const duration = 2000 + (index * 600);
-                const distance = (items.length - 1) * ITEM_HEIGHT;
-
                 reel.style.transition = `transform ${duration}ms cubic-bezier(0.45, 0.05, 0.55, 0.95)`;
-                reel.style.transform = `translateY(-${distance}px)`;
-
+                reel.style.transform = `translateY(-${(items.length - 1) * ITEM_HEIGHT}px)`;
                 setTimeout(() => {
                     reel.style.transition = 'none';
                     reel.style.transform = 'translateY(0)';
@@ -122,80 +107,84 @@
             });
         }
 
-        function checkWinCondition(res) {
+        function checkWin(res) {
             const counts = {};
             res.forEach(s => counts[s] = (counts[s] || 0) + 1);
-            const maxCount = Math.max(...Object.values(counts));
-
-            if (maxCount === 3) {
-                showChoiceModal(3);
-            } else if (maxCount === 2) {
-                showChoiceModal(2);
-            } else {
-                spinBtn.disabled = balance <= 0;
-            }
+            const max = Math.max(...Object.values(counts));
+            if (max >= 2) showChoiceModal(max);
+            else spinBtn.disabled = balance <= 0;
         }
 
         function showChoiceModal(type) {
             confetti({ particleCount: 100, spread: 60, origin: { y: 0.7 }, colors: ['#b8860b', '#fff'] });
             winChoiceModal.style.display = 'flex';
-            
-            if (type === 3) {
-                choiceTitle.textContent = "ДЖЕКПОТ (3/3)";
-                choiceDesc.textContent = "Выберите вашу супер-награду:";
-                btnOpt1.textContent = "+2 ПРОКРУТА";
-                btnOpt2.textContent = "X2 ВЕЩЬ";
-                window.currentWinType = 3;
-            } else {
-                choiceTitle.textContent = "ВЫИГРЫШ (2/3)";
-                choiceDesc.textContent = "Что выберете?";
-                btnOpt1.textContent = "+1 ПРОКРУТ";
-                btnOpt2.textContent = "ВЕРНУТЬ ВЕЩЬ";
-                window.currentWinType = 2;
-            }
+            const isJackpot = type === 3;
+            document.getElementById('choiceTitle').textContent = isJackpot ? "ДЖЕКПОТ (3/3)" : "ВЫИГРЫШ (2/3)";
+            document.getElementById('choiceDesc').textContent = "Выберите ваш приз:";
+            document.getElementById('btnOpt1').textContent = isJackpot ? "+2 ПРОКРУТА" : "+1 ПРОКРУТ";
+            document.getElementById('btnOpt2').textContent = isJackpot ? "X2 ВЕЩЬ" : "ВЕРНУТЬ ВЕЩЬ";
+            window.currentWinType = type;
         }
 
         window.makeChoice = async (option) => {
             const type = window.currentWinType;
             winChoiceModal.style.display = 'none';
-
             if (option === 1) {
-                // Добавляем прокруты в Firebase
                 const add = type === 3 ? 2 : 1;
-                const userDocRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data');
-                await updateDoc(userDocRef, { balance: balance + add });
+                await updateDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data'), { balance: balance + add });
                 alert(`Добавлено ${add} попыток!`);
             } else {
-                // Логика "Вещи" (просто уведомление)
-                const msg = type === 3 ? "Заявка на X2 Вещь отправлена!" : "Запрос на возврат вещи принят!";
-                alert(msg);
+                alert(type === 3 ? "Заявка на X2 отправлена!" : "Запрос на возврат принят!");
             }
             spinBtn.disabled = balance <= 0;
         };
 
-        // Promos & Admin
+        // Promo Logic
         window.activatePromo = async () => {
             const input = document.getElementById('promoInput');
             const code = input.value.trim().toUpperCase();
             if (!code || !currentUser) return;
-            const ref = doc(db, 'artifacts', appId, 'public', 'data', 'promocodes', code);
-            const snap = await getDoc(ref);
-            if (snap.exists()) {
-                const val = snap.data().value;
-                await updateDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data'), { balance: balance + val });
-                await deleteDoc(ref);
+
+            if (usedPromos.includes(code)) {
+                alert('Вы уже активировали этот код!');
+                return;
+            }
+
+            const promoRef = doc(db, 'artifacts', appId, 'public', 'data', 'promocodes', code);
+            const promoSnap = await getDoc(promoRef);
+
+            if (promoSnap.exists()) {
+                const data = promoSnap.data();
+                if (data.uses >= data.maxUses) {
+                    alert('Лимит активаций этого кода исчерпан!');
+                    return;
+                }
+
+                const userRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data');
+                await updateDoc(userRef, { 
+                    balance: balance + data.value,
+                    usedPromos: arrayUnion(code)
+                });
+                await updateDoc(promoRef, { uses: increment(1) });
+                
                 input.value = '';
-                alert('Код активирован!');
-            } else alert('Код не найден');
+                alert(`Код активирован! +${data.value} попыток.`);
+            } else alert('Код не существует');
         };
 
         window.savePromo = async () => {
             const name = document.getElementById('newPromoName').value.trim().toUpperCase();
             const val = parseInt(document.getElementById('newPromoVal').value);
-            if (name && val >= 0) {
-                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'promocodes', name), { value: val });
+            const max = parseInt(document.getElementById('newPromoMax').value);
+            if (name && val >= 0 && max > 0) {
+                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'promocodes', name), { 
+                    value: val, 
+                    maxUses: max,
+                    uses: 0 
+                });
                 alert('Промокод создан');
-            }
+                document.querySelectorAll('#adminModal input').forEach(i => i.value = '');
+            } else alert('Заполните все поля корректно');
         };
 
         window.openAuth = () => { document.getElementById('authModal').style.display = 'flex'; };
@@ -204,7 +193,7 @@
             if (document.getElementById('adminPass').value === '0501') {
                 document.getElementById('authModal').style.display = 'none';
                 document.getElementById('adminModal').style.display = 'flex';
-            } else alert('Ошибка');
+            } else alert('Неверно');
         };
     </script>
 
@@ -285,16 +274,16 @@
         <div class="modal-box">
             <h3 style="color: var(--accent);">АДМИНКА</h3>
             <input type="text" id="newPromoName" class="input-base" style="width:100%; margin-bottom:10px;" placeholder="Имя кода">
-            <input type="number" id="newPromoVal" class="input-base" style="width:100%; margin-bottom:15px;" placeholder="Кол-во попыток">
+            <input type="number" id="newPromoVal" class="input-base" style="width:100%; margin-bottom:10px;" placeholder="Попытки (+)">
+            <input type="number" id="newPromoMax" class="input-base" style="width:100%; margin-bottom:15px;" placeholder="Макс. активаций">
             <button class="btn-main" onclick="savePromo()">СОЗДАТЬ</button>
             <button class="btn-side" style="width:100%; padding:12px;" onclick="closeModals()">ЗАКРЫТЬ</button>
             <div style="margin-top: 20px; font-size: 0.7rem; text-align: left; opacity: 0.5;">
-                Активные: <span id="codeList">...</span>
+                Доступно: <span id="codeList">...</span>
             </div>
         </div>
     </div>
 
 </body>
 </html>
-
 
